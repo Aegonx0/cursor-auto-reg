@@ -1,35 +1,42 @@
 using System;
-using System.Diagnostics;
-using System.IO;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using System.Windows.Threading;
-using Newtonsoft.Json;
+using OpenQA.Selenium;
+using OpenQA.Selenium.Chrome;
+using OpenQA.Selenium.Support.UI;
+using WebDriverManager;
+using WebDriverManager.DriverConfigs.Impl;
 
 namespace CursorAutoRegister
 {
     public partial class MainWindow : Window
     {
-        private Process pythonProcess;
+        private IWebDriver driver;
         private bool isRunning = false;
         private DispatcherTimer particleTimer;
         private Random random = new Random();
+        private CancellationTokenSource cancellationTokenSource;
+        private string tempEmail = "";
+        private string password = "";
 
         public MainWindow()
         {
             InitializeComponent();
             InitializeAnimations();
             CreateParticles();
-            LogMessage("Application initialized successfully");
+            LogMessage("🚀 Application initialized successfully");
         }
 
         private void InitializeAnimations()
         {
-            // Start particle animation
             particleTimer = new DispatcherTimer();
             particleTimer.Interval = TimeSpan.FromMilliseconds(100);
             particleTimer.Tick += UpdateParticles;
@@ -56,7 +63,6 @@ namespace CursorAutoRegister
                 
                 ParticleCanvas.Children.Add(particle);
 
-                // Animate particle
                 var storyboard = new Storyboard();
                 var animationX = new DoubleAnimation
                 {
@@ -91,7 +97,6 @@ namespace CursorAutoRegister
         {
             foreach (Ellipse particle in ParticleCanvas.Children)
             {
-                var opacity = particle.Opacity;
                 particle.Opacity = 0.3 + (Math.Sin(DateTime.Now.Millisecond * 0.01) + 1) * 0.2;
             }
         }
@@ -117,18 +122,24 @@ namespace CursorAutoRegister
             StartButton.IsEnabled = false;
             StopButton.IsEnabled = true;
             isRunning = true;
+            cancellationTokenSource = new CancellationTokenSource();
 
             StartProgressAnimation();
-            UpdateStatus("Initializing automation process...");
+            UpdateStatus("🚀 Initializing automation process...");
             LogMessage("Starting registration process");
 
             try
             {
-                await RunPythonAutomation();
+                await RunAutomation(cancellationTokenSource.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                LogMessage("⏹️ Registration process cancelled");
+                UpdateStatus("Process stopped by user");
             }
             catch (Exception ex)
             {
-                LogMessage($"Error: {ex.Message}");
+                LogMessage($"❌ Error: {ex.Message}");
                 UpdateStatus("Registration failed");
             }
             finally
@@ -137,6 +148,8 @@ namespace CursorAutoRegister
                 StopButton.IsEnabled = false;
                 isRunning = false;
                 StopProgressAnimation();
+                driver?.Quit();
+                driver?.Dispose();
             }
         }
 
@@ -144,99 +157,262 @@ namespace CursorAutoRegister
         {
             if (!isRunning) return;
 
-            try
-            {
-                pythonProcess?.Kill();
-                pythonProcess?.Dispose();
-                pythonProcess = null;
-            }
-            catch (Exception ex)
-            {
-                LogMessage($"Error stopping process: {ex.Message}");
-            }
-
+            cancellationTokenSource?.Cancel();
+            driver?.Quit();
+            
             StartButton.IsEnabled = true;
             StopButton.IsEnabled = false;
             isRunning = false;
             StopProgressAnimation();
-            UpdateStatus("Process stopped by user");
+            UpdateStatus("⏹️ Process stopped by user");
             LogMessage("Registration process stopped");
         }
 
-        private async Task RunPythonAutomation()
+        private async Task RunAutomation(CancellationToken cancellationToken)
         {
             try
             {
-                // Create Python script path
-                string pythonScript = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "automation_backend.py");
+                UpdateStatus("🌐 Starting Chrome browser...");
+                LogMessage("Initializing Chrome browser in incognito mode");
+
+                var driverPath = new DriverManager().SetUpDriver(new ChromeConfig());
+                var options = new ChromeOptions();
+                options.AddArgument("--incognito");
+                options.AddArgument("--disable-blink-features=AutomationControlled");
+                options.AddExcludedArgument("enable-automation");
+                options.AddAdditionalOption("useAutomationExtension", false);
+                options.AddArgument("--disable-gpu");
+                options.AddArgument("--no-sandbox");
+
+                var service = ChromeDriverService.CreateDefaultService(System.IO.Path.GetDirectoryName(driverPath));
+                driver = new ChromeDriver(service, options);
+                driver.ExecuteScript("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})");
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                UpdateStatus("🌐 Navigating to Cursor sign-up...");
+                LogMessage("Opening Cursor registration page");
+                driver.Navigate().GoToUrl("https://authenticator.cursor.sh/sign-up");
+
+                await Task.Delay(3000, cancellationToken);
+
+                var (firstName, lastName) = GenerateRandomName();
+                UpdateStatus("👤 Generated user details");
+                LogMessage($"Generated name: {firstName} {lastName}");
+
+                tempEmail = await GetTempEmail(cancellationToken);
+                if (string.IsNullOrEmpty(tempEmail))
+                    throw new Exception("Failed to get temporary email");
+
+                UpdateStatus("📝 Filling registration form...");
+                LogMessage("Entering user information");
+
+                var wait = new WebDriverWait(driver, TimeSpan.FromSeconds(10));
                 
-                if (!File.Exists(pythonScript))
-                {
-                    throw new Exception("Python automation script not found");
-                }
+                var firstNameField = wait.Until(d => d.FindElement(By.Name("firstName")));
+                firstNameField.SendKeys(firstName);
+                await Task.Delay(1000, cancellationToken);
 
-                // Start Python process
-                var startInfo = new ProcessStartInfo
-                {
-                    FileName = "python",
-                    Arguments = $"\"{pythonScript}\"",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                };
+                var lastNameField = driver.FindElement(By.Name("lastName"));
+                lastNameField.SendKeys(lastName);
+                await Task.Delay(1000, cancellationToken);
 
-                pythonProcess = new Process { StartInfo = startInfo };
-                
-                pythonProcess.OutputDataReceived += (sender, e) =>
-                {
-                    if (!string.IsNullOrEmpty(e.Data))
-                    {
-                        Dispatcher.Invoke(() =>
-                        {
-                            try
-                            {
-                                var message = JsonConvert.DeserializeObject<AutomationMessage>(e.Data);
-                                UpdateStatus(message.Status);
-                                LogMessage(message.Message);
-                            }
-                            catch
-                            {
-                                LogMessage(e.Data);
-                            }
-                        });
-                    }
-                };
+                var emailField = driver.FindElement(By.Name("email"));
+                emailField.SendKeys(tempEmail);
+                await Task.Delay(1000, cancellationToken);
 
-                pythonProcess.ErrorDataReceived += (sender, e) =>
-                {
-                    if (!string.IsNullOrEmpty(e.Data))
-                    {
-                        Dispatcher.Invoke(() => LogMessage($"Error: {e.Data}"));
-                    }
-                };
+                var continueButton = driver.FindElement(By.XPath("//button[contains(text(), 'Continue')]"));
+                continueButton.Click();
 
-                pythonProcess.Start();
-                pythonProcess.BeginOutputReadLine();
-                pythonProcess.BeginErrorReadLine();
+                await Task.Delay(3000, cancellationToken);
 
-                await Task.Run(() => pythonProcess.WaitForExit());
+                UpdateStatus("🔐 Setting password...");
+                LogMessage("Creating secure password");
 
-                if (pythonProcess.ExitCode == 0)
-                {
-                    UpdateStatus("Registration completed successfully!");
-                    LogMessage("✅ Account created successfully!");
-                }
-                else
-                {
-                    UpdateStatus("Registration failed");
-                    LogMessage("❌ Registration process failed");
-                }
+                password = GeneratePassword();
+                LogMessage($"Generated password: {password}");
+
+                var passwordField = wait.Until(d => d.FindElement(By.Name("password")));
+                passwordField.SendKeys(password);
+                await Task.Delay(1000, cancellationToken);
+
+                continueButton = driver.FindElement(By.XPath("//button[contains(text(), 'Continue')]"));
+                continueButton.Click();
+
+                await Task.Delay(3000, cancellationToken);
+
+                var verificationCode = await GetVerificationCode(cancellationToken);
+                if (string.IsNullOrEmpty(verificationCode))
+                    throw new Exception("Failed to get verification code");
+
+                UpdateStatus("✅ Entering verification code...");
+                LogMessage("Completing verification");
+
+                var codeField = wait.Until(d => d.FindElement(By.Name("code")));
+                codeField.SendKeys(verificationCode);
+                await Task.Delay(1000, cancellationToken);
+
+                var verifyButton = driver.FindElement(By.XPath("//button[contains(text(), 'Verify')]"));
+                verifyButton.Click();
+
+                await Task.Delay(5000, cancellationToken);
+
+                UpdateStatus("🎉 Registration completed successfully!");
+                LogMessage("✅ Account created successfully!");
+                LogMessage($"📋 Name: {firstName} {lastName}");
+                LogMessage($"📧 Email: {tempEmail}");
+                LogMessage($"🔑 Password: {password}");
+
+                MessageBox.Show("Cursor account registered successfully!", "Success", 
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
-                UpdateStatus("Error occurred");
-                LogMessage($"❌ Error: {ex.Message}");
+                UpdateStatus("❌ Registration failed");
+                LogMessage($"Error: {ex.Message}");
+                throw;
+            }
+        }
+
+        private (string, string) GenerateRandomName()
+        {
+            var firstNames = new[] { "Alex", "Jordan", "Taylor", "Casey", "Morgan", "Riley", "Avery", "Quinn", 
+                "Blake", "Cameron", "Drew", "Emery", "Finley", "Harper", "Hayden", "Jamie",
+                "Kendall", "Logan", "Parker", "Peyton", "Reese", "River", "Rowan", "Sage",
+                "Skyler", "Sydney", "Tanner", "Teagan", "Tyler", "Winter" };
+            
+            var lastNames = new[] { "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis",
+                "Rodriguez", "Martinez", "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson",
+                "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee", "Perez", "Thompson",
+                "White", "Harris", "Sanchez", "Clark", "Ramirez", "Lewis", "Robinson" };
+            
+            return (firstNames[random.Next(firstNames.Length)], lastNames[random.Next(lastNames.Length)]);
+        }
+
+        private string GeneratePassword()
+        {
+            var passwords = new[] { "sunshine123", "password123", "welcome123", "hello123", "computer123",
+                "internet123", "freedom123", "rainbow123", "butterfly123", "mountain123" };
+            return passwords[random.Next(passwords.Length)];
+        }
+
+        private async Task<string> GetTempEmail(CancellationToken cancellationToken)
+        {
+            try
+            {
+                UpdateStatus("📧 Getting temporary email...");
+                LogMessage("Connecting to temp-mail.org");
+
+                var options = new ChromeOptions();
+                options.AddArgument("--headless");
+                options.AddArgument("--no-sandbox");
+                options.AddArgument("--disable-dev-shm-usage");
+                options.AddArgument("--disable-gpu");
+
+                var driverPath = new DriverManager().SetUpDriver(new ChromeConfig());
+                var service = ChromeDriverService.CreateDefaultService(System.IO.Path.GetDirectoryName(driverPath));
+                using var tempDriver = new ChromeDriver(service, options);
+                
+                tempDriver.Navigate().GoToUrl("https://temp-mail.org/en/");
+                await Task.Delay(3000, cancellationToken);
+
+                var emailElement = tempDriver.FindElement(By.Id("mail"));
+                var email = emailElement.GetAttribute("value");
+
+                if (!string.IsNullOrEmpty(email))
+                {
+                    LogMessage($"���� Email obtained: {email}");
+                    return email;
+                }
+                
+                throw new Exception("Could not get temporary email");
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"❌ Error getting email: {ex.Message}");
+                return null;
+            }
+        }
+
+        private async Task<string> GetVerificationCode(CancellationToken cancellationToken)
+        {
+            try
+            {
+                UpdateStatus("📬 Checking for verification email...");
+                LogMessage("Waiting for verification code");
+
+                var options = new ChromeOptions();
+                options.AddArgument("--headless");
+                options.AddArgument("--no-sandbox");
+                options.AddArgument("--disable-dev-shm-usage");
+                options.AddArgument("--disable-gpu");
+
+                var driverPath = new DriverManager().SetUpDriver(new ChromeConfig());
+                var service = ChromeDriverService.CreateDefaultService(System.IO.Path.GetDirectoryName(driverPath));
+                using var tempDriver = new ChromeDriver(service, options);
+                
+                tempDriver.Navigate().GoToUrl("https://temp-mail.org/en/");
+                await Task.Delay(2000, cancellationToken);
+
+                var emailInput = tempDriver.FindElement(By.Id("mail"));
+                emailInput.Clear();
+                emailInput.SendKeys(tempEmail);
+                emailInput.SendKeys(Keys.Enter);
+
+                await Task.Delay(3000, cancellationToken);
+
+                for (int attempt = 0; attempt < 30; attempt++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    try
+                    {
+                        var refreshButton = tempDriver.FindElement(By.ClassName("refresh"));
+                        refreshButton.Click();
+                        await Task.Delay(2000, cancellationToken);
+
+                        var emails = tempDriver.FindElements(By.ClassName("mail"));
+                        
+                        foreach (var email in emails)
+                        {
+                            if (email.Text.Contains("Cursor") || email.Text.ToLower().Contains("verify"))
+                            {
+                                email.Click();
+                                await Task.Delay(2000, cancellationToken);
+
+                                var emailContent = tempDriver.FindElement(By.ClassName("mail-content"));
+                                var contentText = emailContent.Text;
+
+                                var codeMatch = Regex.Match(contentText, @"\b\d{6}\b");
+                                if (codeMatch.Success)
+                                {
+                                    var verificationCode = codeMatch.Value;
+                                    LogMessage($"🔑 Verification code found: {verificationCode}");
+                                    return verificationCode;
+                                }
+                            }
+                        }
+
+                        LogMessage($"⏳ Waiting for email... (attempt {attempt + 1}/30)");
+                        await Task.Delay(5000, cancellationToken);
+                    }
+                    catch (Exception)
+                    {
+                        await Task.Delay(2000, cancellationToken);
+                        continue;
+                    }
+                }
+
+                return null;
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"❌ Error getting verification code: {ex.Message}");
+                return null;
             }
         }
 
@@ -246,7 +422,6 @@ namespace CursorAutoRegister
             {
                 StatusText.Text = status;
                 
-                // Add pulse animation to status
                 var storyboard = (Storyboard)FindResource("PulseAnimation");
                 Storyboard.SetTarget(storyboard, StatusText);
                 storyboard.Begin();
@@ -278,7 +453,8 @@ namespace CursorAutoRegister
                 if (result == MessageBoxResult.No)
                     return;
 
-                pythonProcess?.Kill();
+                cancellationTokenSource?.Cancel();
+                driver?.Quit();
             }
 
             Application.Current.Shutdown();
@@ -287,15 +463,10 @@ namespace CursorAutoRegister
         protected override void OnClosed(EventArgs e)
         {
             particleTimer?.Stop();
-            pythonProcess?.Kill();
-            pythonProcess?.Dispose();
+            cancellationTokenSource?.Cancel();
+            driver?.Quit();
+            driver?.Dispose();
             base.OnClosed(e);
         }
-    }
-
-    public class AutomationMessage
-    {
-        public string Status { get; set; }
-        public string Message { get; set; }
     }
 }
