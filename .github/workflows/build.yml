@@ -1,0 +1,71 @@
+name: Build CursorAutoRegister
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-csharp-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up .NET
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: '6.0.x'
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Restore .NET dependencies
+      run: dotnet restore
+    
+    - name: Build C# application
+      run: |
+        dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./publish
+    
+    - name: Copy Python backend
+      run: copy automation_backend.py ./publish/
+    
+    - name: Upload C# artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: CursorAutoRegister-CSharp-Windows
+        path: publish/CursorAutoRegister.exe
+
+  build-python-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Build Python executable
+      run: |
+        pyinstaller --onefile --windowed --name "CursorAutoRegister-Python" --icon=NONE cursor_auto_register.py
+    
+    - name: Upload Python artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: CursorAutoRegister-Python-Windows
+        path: dist/CursorAutoRegister-Python.exe
