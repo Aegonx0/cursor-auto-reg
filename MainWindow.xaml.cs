@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Shapes;
@@ -186,7 +187,7 @@ namespace CursorAutoRegister
 
                 var service = ChromeDriverService.CreateDefaultService(System.IO.Path.GetDirectoryName(driverPath));
                 driver = new ChromeDriver(service, options);
-                driver.ExecuteScript("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})");
+                ((IJavaScriptExecutor)driver).ExecuteScript("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})");
 
                 cancellationToken.ThrowIfCancellationRequested();
 
